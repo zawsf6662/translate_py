@@ -1,0 +1,221 @@
+import tkinter as tk  # เครื่องมือสร้างหน้าต่างโปรแกรม (GUI) ปุ่ม และข้อความ
+from tkinter import ttk
+# นำเข้าเครื่องมือจัดการรูปภาพ (Image: ตัวรูป, ImageGrab: แคปจอ, ImageOps: แต่งรูป)
+from PIL import ImageGrab, ImageOps, Image 
+import pytesseract  # นำเข้า Tesseract (สมองเทียมสำหรับอ่านตัวหนังสือจากภาพ)
+from deep_translator import GoogleTranslator  # นำเข้าตัวแปลภาษา (ใช้ Google Translate)
+import threading  # เครื่องมือ "ร่างแยก" ช่วยให้โปรแกรมทำงานหลายอย่างพร้อมกันได้
+import time  # เครื่องมือเกี่ยวกับเวลา (เอาไว้สั่งให้โปรแกรมหยุดรอ)
+
+# =================ตั้งค่า (CONFIG)=================
+# บอกโปรแกรมว่าไฟล์สมอง (tesseract.exe) อยู่ที่ไหนในเครื่องคอมเรา
+# ถ้าลงไว้ที่อื่น ต้องแก้ path ตรงนี้ให้ถูก
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# =================================================
+
+class ResizableWindow(tk.Toplevel):
+    """
+    คลาสนี้คือ 'พิมพ์เขียว' สำหรับสร้างหน้าต่างแบบพิเศษ
+    ที่มีคุณสมบัติ: ไม่มีขอบ, โปร่งใส, ลากย้ายได้, และยืดหดขนาดได้
+    """
+    def __init__(self, parent, title="Window", bg_color="black", alpha=0.5):
+        super().__init__(parent) # เรียกฟังก์ชันสร้างหน้าต่างมาตรฐานขึ้นมาก่อน
+        self.title(title) # ตั้งชื่อหน้าต่าง
+        self.bg_color = bg_color # สีพื้นหลัง
+        
+        # --- ตั้งค่าลักษณะหน้าต่าง ---
+        self.overrideredirect(True)      # สั่งตัดขอบหน้าต่างทิ้ง (เอาแถบชื่อด้านบนออก)
+        self.attributes("-topmost", True) # สั่งให้อยู่บนสุดเสมอ (เกมจะได้ไม่บังหน้าต่างเรา)
+        self.attributes("-alpha", alpha)  # สั่งให้โปร่งใส (0.1 = จางมาก, 1.0 = ทึบ)
+        self.configure(bg=bg_color)       # เทสีพื้นหลังตามที่กำหนด
+
+        # ตัวแปรสำหรับจำตำแหน่งเมาส์ (เอาไว้ใช้คำนวณตอนลากหน้าต่าง)
+        self._drag_data = {"x": 0, "y": 0}
+
+        # --- ผูกการทำงานของเมาส์ (Mouse Events) ---
+        # ถ้าคลิกซ้ายค้างที่พื้นหลัง (<Button-1>) -> ให้ไปทำฟังก์ชัน start_move
+        self.bind("<Button-1>", self.start_move)
+        # ถ้าลากเมาส์ (<B1-Motion>) -> ให้ไปทำฟังก์ชัน do_move
+        self.bind("<B1-Motion>", self.do_move)
+
+        # --- สร้างจุดจับสำหรับยืดขยาย (Grip) ---
+        # สร้างสี่เหลี่ยมเล็กๆ สีเทา ไว้ที่มุมขวาล่าง
+        # cursor="size_nw_se" คือเปลี่ยนรูปเมาส์เป็นลูกศรเฉียงๆ เวลาชี้
+        self.grip = tk.Label(self, bg="gray", cursor="size_nw_se")
+        
+        # วางตำแหน่งมุมขวาล่างเป๊ะๆ
+        self.grip.place(relx=1.0, rely=1.0, x=-20, y=-20, width=20, height=20, anchor="nw")
+        
+        # ถ้าคลิกที่จุดจับนี้ -> เริ่มเตรียมยืดขยาย
+        self.grip.bind("<Button-1>", self.start_resize)
+        # ถ้าลากจุดจับนี้ -> คำนวณขนาดหน้าต่างใหม่
+        self.grip.bind("<B1-Motion>", self.do_resize)
+
+    def start_move(self, event):
+        """เมื่อเริ่มกดเมาส์เพื่อจะลาก: จำจุดเริ่มต้นไว้"""
+        self._drag_data["x"] = event.x
+        self._drag_data["y"] = event.y
+
+    def do_move(self, event):
+        """เมื่อกำลังลากเมาส์: คำนวณเพื่อย้ายหน้าต่างตามมือ"""
+        # คำนวณตำแหน่งใหม่ = ตำแหน่งเดิม + ส่วนต่างที่เมาส์ขยับไป
+        x = self.winfo_x() + (event.x - self._drag_data["x"])
+        y = self.winfo_y() + (event.y - self._drag_data["y"])
+        self.geometry(f"+{x}+{y}") # สั่งย้ายหน้าต่างไปตำแหน่งใหม่
+
+    def start_resize(self, event):
+        """เมื่อเริ่มกดปุ่มยืดขยาย: จำจุดเริ่มต้น"""
+        self._drag_data["x"] = event.x
+        self._drag_data["y"] = event.y
+
+    def do_resize(self, event):
+        """เมื่อกำลังลากปุ่มยืดขยาย: คำนวณขนาดหน้าต่างใหม่"""
+        # คำนวณความกว้าง/สูงใหม่
+        width = self.winfo_width() + (event.x - self._drag_data["x"])
+        height = self.winfo_height() + (event.y - self._drag_data["y"])
+        
+        # ป้องกันไม่ให้ย่อจนเล็กเกินไป (ต่ำกว่า 50 pixel ห้ามย่อต่อ เดี๋ยวหาไม่เจอ)
+        if width > 50 and height > 50:
+            self.geometry(f"{width}x{height}") # สั่งเปลี่ยนขนาดหน้าต่าง
+
+
+class App:
+    """
+    คลาสหลัก (Main Controller)
+    ทำหน้าที่สร้างหน้าต่าง Scanner, Output และควบคุมการอ่าน/แปลภาษาทั้งหมด
+    """
+    def __init__(self, root):
+        self.root = root
+        self.root.withdraw() # ซ่อนหน้าต่างหลักของ Python ไว้ (เราไม่ใช้ เราใช้หน้าต่างสร้างเอง)
+
+        # --- 1. สร้างหน้าต่างสแกน (กรอบแดง) ---
+        # เรียกใช้พิมพ์เขียว ResizableWindow สร้างหน้าต่างสีแดงจางๆ
+        self.scanner = ResizableWindow(root, title="Scanner", bg_color="red", alpha=0.3)
+        self.scanner.geometry("400x120+100+600") # กำหนดขนาดและตำแหน่งเริ่มต้น
+        
+        # ใส่ข้อความแนะนำวิธีใช้ลงในกรอบแดง
+        tk.Label(self.scanner, text="[พื้นที่อ่านข้อความ]\nลากฉันไปทับเกม\nดึงมุมขวาล่างเพื่อขยาย", 
+                 bg="red", fg="white").pack(pady=20)
+
+        # --- 2. สร้างหน้าต่างคำแปล (กรอบดำ) ---
+        # สร้างหน้าต่างสีดำทึบกว่า เอาไว้แสดงผลคำแปล
+        self.output = ResizableWindow(root, title="Output", bg_color="black", alpha=0.8)
+        self.output.geometry("400x150+100+400")
+        
+        # สร้างป้ายข้อความ (Label) สำหรับแสดงคำแปลภาษาไทย
+        self.label_trans = tk.Label(self.output, text="...พร้อมทำงาน...", 
+                                    font=("Sarabun", 18), # ใช้ฟอนต์ Sarabun ขนาด 18
+                                    fg="#00FF00", bg="black", # ตัวหนังสือเขียว พื้นดำ (สไตล์ Fallout)
+                                    wraplength=380) # ถ้าข้อยาวเกิน 380 pixel ให้ขึ้นบรรทัดใหม่
+        self.label_trans.pack(expand=True, fill="both", padx=10, pady=10)
+
+        # ปุ่มปิดโปรแกรม (X) มุมซ้ายบนของกรอบดำ
+        close_btn = tk.Button(self.output, text="X", command=self.close_app, bg="red", fg="white", font=("Arial", 8))
+        close_btn.place(x=0, y=0, width=20, height=20)
+
+        # เตรียมตัวแปลภาษา (จากอังกฤษ source='en' -> ไทย target='th')
+        self.translator = GoogleTranslator(source='en', target='th')
+        self.running = True # ตัวแปรบอกสถานะว่าโปรแกรมกำลังทำงานอยู่
+
+        # --- สร้าง Thread (ร่างแยก) ---
+        # สั่งให้ฟังก์ชัน loop_process ไปทำงานเบื้องหลัง
+        # เพื่อให้หน้าต่างโปรแกรมยังขยับไปมาได้ ไม่ค้างตอนกำลังแปล
+        self.thread = threading.Thread(target=self.loop_process)
+        self.thread.daemon = True # ถ้าปิดโปรแกรมหลัก ให้ Thread นี้ปิดตัวเองตามไปด้วย
+        self.thread.start() # เริ่มทำงาน!
+
+    def preprocess_image(self, img):
+        """
+        ฟังก์ชัน 'ห้องมืดล้างรูป' (Image Processing)
+        ทำหน้าที่รับรูปภาพเข้ามา -> แต่งรูปให้ชัดเปรี๊ยะ -> ส่งรูปกลับออกไป
+        """
+        # 1. ขยายภาพ 3 เท่า (เพื่อให้ Pixel แตกๆ ในเกม ดูเนียนเป็นเส้นเดียวกันมากขึ้น)
+        width, height = img.size
+        img = img.resize((width * 3, height * 3), Image.Resampling.LANCZOS)
+        
+        # 2. เปลี่ยนเป็นภาพขาว-ดำ (Grayscale) ตัดสีที่ไม่จำเป็นทิ้ง
+        img = ImageOps.grayscale(img)
+        
+        # 3. กลับสีภาพ (Invert) 
+        # เกม Fallout เป็น "พื้นดำ-ตัวหนังสือเขียว" -> เราแก้เป็น "พื้นขาว-ตัวหนังสือดำ"
+        # เพราะโปรแกรมอ่าน OCR จะอ่านตัวหนังสือสีดำบนพื้นขาวได้เก่งที่สุด
+        img = ImageOps.invert(img)
+        
+        # 4. ตัดสีรบกวน (Threshold)
+        # สั่งว่า "Pixel ไหนที่ไม่เข้มจริง ให้เปลี่ยนเป็นสีขาวไปเลย"
+        # ช่วยลบพวกคราบสนิม หรือลายเส้นสแกน (Scanlines) ในเกมทิ้งไป
+        # เลข 150 คือค่าความเข้ม (ลองปรับได้ 0-255)
+        img = img.point(lambda p: 255 if p > 150 else 0) 
+        
+        return img
+
+    def loop_process(self):
+        """
+        ฟังก์ชัน 'สมองกล' ที่ทำงานวนลูปตลอดเวลา
+        ลำดับการทำงาน: จับภาพ -> อ่าน -> แปล -> แสดงผล
+        """
+        last_text = "" # ตัวแปรจำว่า "เมื่อกี้แปลคำว่าอะไรไปแล้ว" (จะได้ไม่แปลซ้ำ)
+        
+        # Config ของ Tesseract: 
+        # --psm 6 หมายถึง "ให้มองรูปภาพนี้เป็นก้อนข้อความแนวนอนหนึ่งก้อน"
+        custom_config = r'--oem 3 --psm 6'
+
+        while self.running: # ทำวนไปเรื่อยๆ ตราบใดที่โปรแกรมยังเปิดอยู่
+            try:
+                # 1. เช็คตำแหน่ง: ถามว่าตอนนี้ "กรอบแดง" อยู่ตรงไหนของจอ?
+                x = self.scanner.winfo_rootx()
+                y = self.scanner.winfo_rooty()
+                w = self.scanner.winfo_width()
+                h = self.scanner.winfo_height()
+                
+                # ถ้าหน้าต่างยังไม่พร้อม (ขนาดเป็น 1x1) ให้ข้ามไปก่อน
+                if w <= 1 or h <= 1: 
+                    time.sleep(1)
+                    continue
+
+                # 2. จับภาพ: ถ่ายรูปหน้าจอตามกรอบแดง (Scanner)
+                bbox = (x, y, x + w, y + h) # สร้างสี่เหลี่ยมพิกัด
+                img = ImageGrab.grab(bbox=bbox)
+
+                # 3. แต่งภาพ: ส่งเข้าห้องมืด (ฟังก์ชัน preprocess_image ด้านบน)
+                img = self.preprocess_image(img)
+
+                # 4. อ่าน: ส่งรูปให้ Tesseract แกะออกมาเป็นตัวหนังสือภาษาอังกฤษ
+                text = pytesseract.image_to_string(img, lang='eng', config=custom_config)
+                
+                # 5. ทำความสะอาด: ลบเว้นบรรทัดมั่วๆ และแก้คำผิดบ่อยๆ (เช่น | เป็น I)
+                clean_text = text.strip().replace('\n', ' ').replace('|', 'I').replace('_', ' ')
+
+                # 6. ตัดสินใจว่าจะแปลไหม?
+                # ต้องมีข้อความ.. และต้องไม่ซ้ำกับเมื่อกี้.. และต้องยาวเกิน 3 ตัวอักษร
+                if clean_text and clean_text != last_text and len(clean_text) > 3:
+                    
+                    # ปริ้นท์บอกในจอดำ (Console) เอาไว้เช็คว่าอ่านถูกไหม
+                    print(f"อ่านได้: {clean_text}") 
+                    
+                    # 7. แปล: ส่งไปให้ Google Translate แปลเป็นไทย
+                    translated = self.translator.translate(clean_text)
+                    
+                    # 8. แสดงผล: เอาคำไทยไปแปะบนหน้าต่างสีดำ
+                    self.label_trans.config(text=translated)
+                    
+                    last_text = clean_text # จำคำล่าสุดไว้
+                
+                # 9. พักเหนื่อย: หยุดพัก 0.5 วินาที ก่อนเริ่มรอบใหม่
+                time.sleep(0.5)
+
+            except Exception as e:
+                # ถ้ามี Error อะไร ให้ปริ้นท์บอก แต่ห้ามโปรแกรมปิด
+                print(e)
+                time.sleep(1)
+
+    def close_app(self):
+        """ฟังก์ชันปิดโปรแกรม เมื่อกดปุ่ม X"""
+        self.running = False # สั่งหยุดลูป
+        self.root.quit()     # ปิดหน้าต่าง
+
+# จุดเริ่มต้นของโปรแกรม
+if __name__ == "__main__":
+    root = tk.Tk()   # สร้างรากฐาน GUI
+    app = App(root)  # เรียกใช้คลาส App ของเรา
+    root.mainloop()  # สั่งให้หน้าต่างคงอยู่ตลอดเวลา (Loop ของ GUI)
